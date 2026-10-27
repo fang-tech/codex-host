@@ -39,6 +39,15 @@ present in the sidebar for this navigation; CLI reads can access older history.
 System-wide URL handling remains owned by Codex Desktop. A link identifies a
 Thread; instructions to read it do not authorize sending messages to it.
 
+Native Codex shell commands must inherit `CODEXHOST_RUNTIME_ENDPOINT` and
+`CODEXHOST_RUNTIME_TOKEN`, plus `CODEXHOST_CLI_PATH` and `CODEXHOST_CLI_NODE_PATH`
+for the installed CLI. A `shell_environment_policy` using `inherit = "core"`,
+an allowlist without these names, or automatic token exclusion can remove them.
+The CLI then reports `RUNTIME_UNREACHABLE` before attempting cross-machine routing.
+Configure the calling machine's shell environment policy to preserve these
+Host-provided variables and reload the session. Keep credential values in the
+process environment; do not paste them into links, prompts, or configuration.
+
 The bridge permits only fixed, Host-local read and send operations. A response
 must come back through the connection and window that accepted the request.
 Multiple Desktop windows may attach without replacing each other's requests.
@@ -149,6 +158,8 @@ both directions through a renderer/Runtime bridge, read pagination, send receipt
 deduplication across restarts, busy Threads, connection expiry and replacement,
 no local fallback, strict operation validation and renderer Host selection.
 Browser fixtures cover the sidebar copy action and link navigation.
+Live CLI validation must run from ordinary session shell tools with their inherited
+environment; manually supplying Runtime credentials does not verify that path.
 Before deployment, additionally validate local-to-Linux native and external
 Harness reads and sends, pagination, active-turn observation, disconnected/old
 Hosts, shared owner routing and post-restart behavior. Unit tests are not evidence of
