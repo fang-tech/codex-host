@@ -1,6 +1,16 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+interface FixtureWindow extends Window {
+  nativeMenu?: { submenu?: Record<string, unknown>[] }[];
+  chooseNativeMenu(id: string): void;
+  copied?: string;
+  opened?: string;
+  nativeServices: { clipboard: { writeText(text: string): Promise<unknown> } };
+  originalClipboard: unknown;
+  stopLinks(): void;
+}
+
 const browserExecutable = process.env.CODEXHOST_PLAYWRIGHT_EXECUTABLE_PATH;
 if (browserExecutable) test.use({ launchOptions: { executablePath: browserExecutable } });
 const { outputFiles } = await build({
@@ -15,15 +25,19 @@ const { outputFiles } = await build({
         row.__reactFiber$fixture = { memoizedProps: { conversationId: row.dataset.thread, dataAttributes: attributes }, return: null };
         row.addEventListener("click", () => window.opened = row.dataset.thread);
       }
-      window.nativeCopies = 0;
-      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async text => { window.copied = text; } } });
-      document.addEventListener("contextmenu", event => {
+      // Desktop's native clipboard service is a callable RPC proxy, separate from navigator.clipboard.
+      const writeText = async text => { window.copied = text; };
+      window.originalClipboard = new Proxy(function(){}, { get: (_target, key) => key === "writeText" ? writeText : undefined });
+      window.nativeServices = { clipboard: window.originalClipboard };
+      window.electronBridge = Object.freeze({ showContextMenu: async items => {
+        window.nativeMenu = items;
+        return new Promise(resolve => { window.chooseNativeMenu = id => resolve({ id }); });
+      } });
+      document.addEventListener("contextmenu", async event => {
         event.preventDefault();
-        document.querySelector("[role=menu]")?.remove();
-        const menu = document.createElement("div"); menu.setAttribute("role", "menu");
-        menu.innerHTML = '<button role="menuitem"><svg aria-hidden="true"><path /></svg><span>Copy deeplink</span><kbd>⌥⌘L</kbd></button><button role="menuitem">Archive</button>';
-        menu.querySelector("button").addEventListener("click", () => window.nativeCopies++);
-        document.body.append(menu);
+        const row = event.target.closest("[data-app-action-sidebar-thread-row]");
+        const selected = await window.electronBridge.showContextMenu([{ id: "copy-actions", label: "复制", submenu: [{ id: "copy-deeplink", label: "复制深度链接", accelerator: "Alt+Command+L", icon: "copy" }, { id: "copy-conversation-markdown", label: "复制为 Markdown" }] }]);
+        if (selected.id === "copy-deeplink") await window.nativeServices.clipboard.writeText(row ? "codex://threads/"+row.dataset.thread+"?hostId="+encodeURIComponent(row.getAttribute("data-app-action-sidebar-thread-host-id")) : "unrelated");
       });
       window.stopLinks = installRendererThreadLinks(() => ({ forHost: id => routes.get(id) ?? null, knownHostIds: () => [...routes.keys()] }));
     `,
@@ -40,50 +54,78 @@ const bundle = outputFiles[0]?.text ?? "";
 
 test.beforeEach(async ({ page }) => {
   await page.route("http://127.0.0.1:43439/**", (route) =>
-    route.fulfill({
-      contentType: "text/html; charset=utf-8",
-      body: `<!doctype html><html><body>
-    <style>body{background:#181818;color:#eee;font:14px system-ui;padding:40px}button{display:block;padding:12px;color:inherit;background:#292929;border:1px solid #444}svg{width:16px;height:16px}kbd{margin-left:24px;color:#999}[role=menu]{margin-top:20px}</style>
+    route.fulfill(
+      route.request().url().endsWith("/services.js")
+        ? {
+            contentType: "text/javascript",
+            body: "export const appServices = window.nativeServices;",
+          }
+        : {
+            contentType: "text/html; charset=utf-8",
+            body: `<!doctype html><html><head><link rel="modulepreload" href="/services.js"></head><body>
     <button data-thread="local-thread" data-app-action-sidebar-thread-row="local-row" data-app-action-sidebar-thread-id="local:local-thread" data-app-action-sidebar-thread-host-id="local">本机会话</button>
     <button data-thread="linux-thread" data-app-action-sidebar-thread-row="linux-row" data-app-action-sidebar-thread-id="ssh:linux:linux-thread" data-app-action-sidebar-thread-host-id="ssh:linux">Linux 会话</button>
     <button id="unrelated">其他区域</button>
   </body></html>`,
-    }),
+          },
+    ),
   );
   await page.goto("http://127.0.0.1:43439/");
   await page.addScriptTag({ content: bundle });
 });
 
-test("right-click copies the selected Host's portable link, preserves icons and shortcuts, and supports keyboard", async ({
+test("native Copy deeplink copies a machine-qualified link without replacing the native menu", async ({
   page,
 }) => {
   await page.getByText("Linux 会话", { exact: true }).click({ button: "right" });
-  const copy = page.getByRole("menuitem", { name: /复制跨机器会话链接/ });
-  await expect(copy).toBeVisible();
-  await expect(copy.locator("svg")).toHaveCount(1);
-  await expect(copy.locator("kbd")).toHaveText("⌥⌘L");
-  await copy.focus();
-  await page.keyboard.press("Enter");
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { copied?: string }).copied))
+    .poll(() =>
+      page.evaluate(() => (window as unknown as FixtureWindow).nativeMenu?.[0]?.submenu?.[0]),
+    )
+    .toEqual({
+      id: "copy-deeplink",
+      label: "复制深度链接",
+      accelerator: "Alt+Command+L",
+      icon: "copy",
+    });
+  await page.evaluate(() => (window as unknown as FixtureWindow).chooseNativeMenu("copy-deeplink"));
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as FixtureWindow).copied))
     .toBe(
       "thread://linux-thread?hostId=ssh%3Alinux&machineId=22345678-1234-4123-8123-123456789abc",
     );
-  expect(
-    await page.evaluate(() => (window as unknown as { nativeCopies: number }).nativeCopies),
-  ).toBe(0);
   await page.getByText("本机会话", { exact: true }).click({ button: "right" });
-  await page.getByRole("menuitem", { name: /复制跨机器会话链接/ }).click();
+  await page.evaluate(() => (window as unknown as FixtureWindow).chooseNativeMenu("copy-deeplink"));
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { copied?: string }).copied))
+    .poll(() => page.evaluate(() => (window as unknown as FixtureWindow).copied))
     .toContain("thread://local-thread?hostId=local&machineId=12345678-");
 });
 
-test("leaves unrelated menus alone and follows a portable link using machine identity", async ({
+test("keeps unrelated clipboard writes intact, restores the service on disposal, and resolves machine links", async ({
   page,
 }) => {
   await page.locator("#unrelated").click({ button: "right" });
-  await expect(page.getByRole("menuitem", { name: /Copy deeplink/ })).toBeVisible();
+  await page.evaluate(() => (window as unknown as FixtureWindow).chooseNativeMenu("copy-deeplink"));
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as FixtureWindow).copied))
+    .toBe("unrelated");
+  await page.getByText("Linux 会话", { exact: true }).click({ button: "right" });
+  await page.evaluate(async () => {
+    await (window as unknown as FixtureWindow).nativeServices.clipboard.writeText(
+      "codex://threads/some-other-thread",
+    );
+  });
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).copied)).toBe(
+    "codex://threads/some-other-thread",
+  );
+  await page.evaluate(async () => {
+    await (window as unknown as FixtureWindow).nativeServices.clipboard.writeText(
+      "codex://threads/linux-thread?hostId=ssh%3Alinux&threadAccess=shared",
+    );
+  });
+  expect(await page.evaluate(() => (window as unknown as FixtureWindow).copied)).toBe(
+    "codex://threads/linux-thread?hostId=ssh%3Alinux&threadAccess=shared",
+  );
   await page.evaluate(() => {
     const anchor = document.createElement("a");
     anchor.href =
@@ -93,6 +135,14 @@ test("leaves unrelated menus alone and follows a portable link using machine ide
   });
   await page.getByRole("link", { name: "打开 Linux 会话" }).click();
   await expect
-    .poll(() => page.evaluate(() => (window as unknown as { opened?: string }).opened))
+    .poll(() => page.evaluate(() => (window as unknown as FixtureWindow).opened))
     .toBe("linux-thread");
+  await page.evaluate(() => (window as unknown as FixtureWindow).stopLinks());
+  expect(
+    await page.evaluate(
+      () =>
+        (window as unknown as FixtureWindow).nativeServices.clipboard ===
+        (window as unknown as FixtureWindow).originalClipboard,
+    ),
+  ).toBe(true);
 });

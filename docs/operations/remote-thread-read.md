@@ -2,8 +2,9 @@
 
 ## Portable links and bidirectional access
 
-In a connected Desktop, right-click a sidebar Thread and choose **复制跨机器会话链接**
-(the existing Copy deeplink action). The copied reference includes a stable Host
+In a connected Desktop, right-click a sidebar Thread and choose **复制 → 复制深度链接**
+(**Copy → Copy deeplink**). The native menu keeps its original label; codexhost
+qualifies the clipboard text for the selected sidebar Thread. The copied reference includes a stable Host
 installation identity as well as the Desktop connection hint:
 
 ```text
