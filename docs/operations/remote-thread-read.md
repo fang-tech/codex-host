@@ -47,6 +47,9 @@ The CLI then reports `RUNTIME_UNREACHABLE` before attempting cross-machine routi
 Configure the calling machine's shell environment policy to preserve these
 Host-provided variables and reload the session. Keep credential values in the
 process environment; do not paste them into links, prompts, or configuration.
+The calling session must also permit loopback network access to its Runtime.
+Inheriting environment variables does not enable network access in a read-only
+or otherwise network-restricted sandbox.
 
 The bridge permits only fixed, Host-local read and send operations. A response
 must come back through the connection and window that accepted the request.
@@ -69,6 +72,10 @@ messages are not queued and an existing Turn is not interrupted. Native session
 configuration and approval requirements remain in effect. Shared external
 Threads dispatch through their shared owner. Older Hosts without send support
 are not advertised as send destinations.
+Native Codex resolves settings when the Thread is resumed by its app-server;
+one-off flags from a standalone CLI invocation need not carry over. Set the
+Thread's network permission through native Thread settings before asking it to
+call another Host. Cross-machine sends do not enable network access themselves.
 The CLI uses dedicated Runtime routes for machine-qualified reads and receipt-based
 sends, so a still-running older Runtime rejects them instead of treating them as local.
 
